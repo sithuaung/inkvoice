@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"text/tabwriter"
 
+	"github.com/sithuaung/inkvoice/internal/email"
 	"github.com/sithuaung/inkvoice/internal/model"
 	"github.com/sithuaung/inkvoice/internal/pdf"
 	"github.com/sithuaung/inkvoice/internal/storage"
@@ -345,12 +346,80 @@ func newInvoiceCmd() *cobra.Command {
 
 	sendCmd := &cobra.Command{
 		Use:   "send [id-or-number]",
-		Short: "Send invoice via email",
+		Short: "Send invoice via email / send reminder",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Email sending requires SMTP configuration.")
-			fmt.Println("Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM environment variables.")
-			fmt.Println("This feature will be fully implemented with config support.")
+			if appCfg.SMTPHost == "" {
+				return fmt.Errorf("SMTP not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM in .env")
+			}
+
+			svc, db, err := openService()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			ctx := context.Background()
+			inv, err := svc.GetInvoice(ctx, args[0])
+			if err != nil {
+				inv, err = svc.GetInvoiceByNumber(ctx, args[0])
+				if err != nil {
+					return fmt.Errorf("invoice not found: %s", args[0])
+				}
+			}
+
+			client, err := svc.GetClient(ctx, inv.ClientID)
+			if err != nil {
+				return fmt.Errorf("get client: %w", err)
+			}
+
+			if client.Email == "" {
+				return fmt.Errorf("client %s has no email address", client.Name)
+			}
+
+			// Generate PDF if not already generated
+			pdfFilePath := ""
+			if inv.PdfPath != "" {
+				store := storage.NewLocalStore(appCfg.StorageDir)
+				pdfFilePath = store.Path(inv.PdfPath)
+			} else {
+				// Generate PDF first
+				pdfCmd.Flags().Set("output", "")
+				if err := pdfCmd.RunE(pdfCmd, args); err != nil {
+					return fmt.Errorf("generate PDF: %w", err)
+				}
+				// Re-fetch invoice to get the updated pdf_path
+				inv, _ = svc.GetInvoice(ctx, inv.ID)
+				if inv.PdfPath != "" {
+					store := storage.NewLocalStore(appCfg.StorageDir)
+					pdfFilePath = store.Path(inv.PdfPath)
+				}
+			}
+
+			subject := fmt.Sprintf("Invoice %s", inv.InvoiceNumber)
+			body := fmt.Sprintf("Hi %s,\n\nPlease find attached invoice %s for %s.\n\nDue date: %s\n\nThank you!",
+				client.Name, inv.InvoiceNumber,
+				model.FormatMoney(inv.Total, inv.Currency), inv.DueDate)
+
+			sender := email.NewSMTPSender(email.SMTPConfig{
+				Host:     appCfg.SMTPHost,
+				Port:     appCfg.SMTPPort,
+				Username: appCfg.SMTPUser,
+				Password: appCfg.SMTPPass,
+				From:     appCfg.SMTPFrom,
+			})
+
+			fmt.Printf("Sending invoice %s to %s...\n", inv.InvoiceNumber, client.Email)
+			if err := sender.SendInvoice(client.Email, subject, body, pdfFilePath); err != nil {
+				return fmt.Errorf("send email: %w", err)
+			}
+
+			// Update status to sent if still draft
+			if inv.Status == "draft" {
+				svc.UpdateInvoiceStatus(ctx, inv.ID, "sent")
+			}
+
+			fmt.Println("Invoice sent successfully.")
 			return nil
 		},
 	}
