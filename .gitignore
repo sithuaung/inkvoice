@@ -1,1 +1,9 @@
 _dev
+bin/
+inkvoice
+*.db
+*.db-wal
+*.db-shm
+data/
+.env
+.DS_Store

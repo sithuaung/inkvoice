@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS recurring_invoice_items;
+DROP TABLE IF EXISTS recurring_invoices;
+DROP TABLE IF EXISTS invoice_templates;
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS invoice_items;
+DROP TABLE IF EXISTS invoices;
+DROP TABLE IF EXISTS taxes;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS clients;
+DROP TABLE IF EXISTS settings;
